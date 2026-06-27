@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>Orbit Dodge</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #f8fafc;
+      --muted: #b7c0ce;
+      --line: rgba(255, 255, 255, 0.14);
+      --pink: #ff4d8d;
+      --green: #42e3a8;
+      --blue: #58c4ff;
+    }
+    * {
+      box-sizing: border-box;
+      touch-action: none; /* Disable all default touch behaviors */
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: transparent;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    
+    .arena {
+      position: relative;
+      width: 100%;
+      height: 100%;
+    }
+    
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: transparent;
+    }
+
+    /* HUD */
+    .hud {
+      position: absolute;
+      top: 24px;
+      left: 24px;
+      right: 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      z-index: 10;
+      pointer-events: none;
+    }
+    .hud-pill {
+      background: rgba(6, 10, 16, 0.65);
+      border: 1px solid var(--line);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: var(--muted);
+    }
+    .hud-pill strong {
+      color: var(--ink);
+      font-size: 1.1rem;
+      margin-left: 4px;
+    }
+
+    /* Game Over Overlay */
+    .overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(4, 6, 10, 0.85);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 20;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 300ms ease;
+    }
+    .overlay.show {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .overlay h2 {
+      font-size: 2.2rem;
+      margin: 0 0 8px;
+      letter-spacing: 2px;
+      color: var(--pink);
+      text-transform: uppercase;
+      text-shadow: 0 0 15px rgba(255, 77, 141, 0.4);
+    }
+    .overlay p {
+      font-size: 1.1rem;
+      color: var(--muted);
+      margin: 0 0 24px;
+    }
+    .overlay p strong {
+      color: var(--ink);
+      font-size: 1.6rem;
+    }
+    .btn-replay {
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid var(--line);
+      color: var(--ink);
+      padding: 12px 28px;
+      border-radius: 999px;
+      font-size: 0.95rem;
+      font-weight: 700;
+      cursor: pointer;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      transition: background 200ms ease, border-color 200ms ease, transform 150ms ease;
+    }
+    .btn-replay:hover {
+      background: rgba(255, 255, 255, 0.18);
+      border-color: rgba(255, 255, 255, 0.3);
+    }
+    .btn-replay:active {
+      transform: scale(0.96);
+    }
+  </style>
+</head>
+<body>
+  <div class="arena">
+    <div class="hud">
+      <div class="hud-pill" id="orbitStatus">Ready</div>
+      <div class="hud-pill">Score <strong id="orbitScore">0</strong></div>
+    </div>
+    
+    <canvas id="orbitCanvas"></canvas>
+
+    <div class="overlay" id="gameOverOverlay">
+      <h2>Crashed!</h2>
+      <p>Final Score: <strong id="finalScore">0</strong></p>
+      <button class="btn-replay" id="btnReplay" type="button">Play Again</button>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.querySelector("#orbitCanvas");
+    const scoreEl = document.querySelector("#orbitScore");
+    const statusEl = document.querySelector("#orbitStatus");
+    const overlay = document.querySelector("#gameOverOverlay");
+    const finalScoreEl = document.querySelector("#finalScore");
+    const btnReplay = document.querySelector("#btnReplay");
+
+    let view = { ctx: null, width: 0, height: 0 };
+    let player = { x: 0, y: 0, r: 15 };
+    let enemies = [];
+    let score = 0;
+    let alive = true;
+    let lastTime = performance.now();
+    let dragging = false;
+
+    function fitCanvas() {
+      const rect = canvas.getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.floor(rect.width * ratio));
+      canvas.height = Math.max(1, Math.floor(rect.height * ratio));
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      return { ctx, width: rect.width, height: rect.height };
+    }
+
+    function clamp(value, min, max) {
+      return Math.min(max, Math.max(min, value));
+    }
+
+    function randomBetween(min, max) {
+      return min + Math.random() * (max - min);
+    }
+
+    function reset() {
+      view = fitCanvas();
+      player = { x: view.width / 2, y: view.height * 0.72, r: 15 };
+      enemies = Array.from({ length: 5 }, (_, index) => ({
+        x: randomBetween(30, view.width - 30),
+        y: randomBetween(80, view.height * 0.48), // Pushed down past HUD
+        r: 12 + index,
+        vx: randomBetween(80, 155) * (index % 2 ? 1 : -1),
+        vy: randomBetween(55, 110),
+      }));
+      score = 0;
+      alive = true;
+      statusEl.textContent = "Dodge!";
+      scoreEl.textContent = "0";
+      overlay.classList.remove("show");
+      lastTime = performance.now();
+    }
+
+    function movePlayer(event) {
+      const rect = canvas.getBoundingClientRect();
+      player.x = clamp(event.clientX - rect.left, player.r, view.width - player.r);
+      player.y = clamp(event.clientY - rect.top, player.r, view.height - player.r);
+    }
+
+    canvas.addEventListener("pointerdown", (event) => {
+      dragging = true;
+      canvas.setPointerCapture(event.pointerId);
+      if (!alive) reset();
+      movePlayer(event);
+    });
+    canvas.addEventListener("pointermove", (event) => {
+      if (dragging && alive) movePlayer(event);
+    });
+    canvas.addEventListener("pointerup", () => {
+      dragging = false;
+    });
+
+    btnReplay.addEventListener("click", reset);
+    window.addEventListener("resize", () => {
+      const oldWidth = view.width;
+      const oldHeight = view.height;
+      view = fitCanvas();
+      if (oldWidth > 0 && oldHeight > 0) {
+        player.x = (player.x / oldWidth) * view.width;
+        player.y = (player.y / oldHeight) * view.height;
+      }
+    });
+
+    function draw(now) {
+      const delta = Math.min(0.032, (now - lastTime) / 1000);
+      lastTime = now;
+      
+      const { ctx, width, height } = view;
+      if (!ctx) {
+        requestAnimationFrame(draw);
+        return;
+      }
+
+      ctx.clearRect(0, 0, width, height);
+
+      // Background lines
+      ctx.strokeStyle = "rgba(88, 196, 255, 0.16)";
+      ctx.lineWidth = 1;
+      for (let y = 36; y < height; y += 42) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+
+      if (alive) {
+        score += delta * 12;
+        scoreEl.textContent = Math.floor(score);
+      }
+
+      // Draw enemies
+      enemies.forEach((enemy) => {
+        if (alive) {
+          enemy.x += enemy.vx * delta;
+          enemy.y += enemy.vy * delta;
+          if (enemy.x < enemy.r || enemy.x > width - enemy.r) enemy.vx *= -1;
+          if (enemy.y < enemy.r || enemy.y > height - enemy.r) enemy.vy *= -1;
+        }
+        
+        const distance = Math.hypot(enemy.x - player.x, enemy.y - player.y);
+        if (alive && distance < enemy.r + player.r) {
+          alive = false;
+          statusEl.textContent = "Crashed";
+          finalScoreEl.textContent = Math.floor(score);
+          overlay.classList.add("show");
+        }
+
+        ctx.fillStyle = "#ff4d6d";
+        ctx.beginPath();
+        ctx.arc(enemy.x, enemy.y, enemy.r, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // Draw player
+      ctx.fillStyle = alive ? "#42e3a8" : "#d7dde7";
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, player.r, 0, Math.PI * 2);
+      ctx.fill();
+
+      requestAnimationFrame(draw);
+    }
+
+    reset();
+    requestAnimationFrame(draw);
+  </script>
+</body>
+</html>
